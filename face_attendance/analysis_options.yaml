@@ -1,0 +1,18 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  language:
+    strict-inference: true
+    strict-raw-types: true
+  errors:
+    invalid_use_of_visible_for_testing_member: error
+    missing_required_param: error
+    missing_return: error
+    always_declare_return_types: error
+
+linter:
+  rules:
+    always_declare_return_types: true
+    prefer_final_locals: true
+    avoid_print: true
+

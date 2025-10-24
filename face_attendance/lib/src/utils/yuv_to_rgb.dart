@@ -44,7 +44,7 @@ img.Image yuv420ToImage(CameraImage image) {
       g = g.clamp(0, 255);
       b = b.clamp(0, 255);
 
-      rgbImage.setPixelRgba(x, y, r, g, b);
+      rgbImage.setPixelRgba(x, y, r, g, b, 255);
     }
   }
 

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:image/image.dart' as img;
 
 import '../theme/app_theme.dart';
 import '../services/locator.dart';
@@ -25,6 +26,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<CameraDescription> _cameras = const [];
   bool _isProcessing = false;
   String? _lastDetectedId;
+  String? _lastDetectedName;
+  String? _lastDetectedDocument;
+  Timer? _bannerTimer;
+  bool _facePresent = false;
+  List<double>? _lastEmbedding;
 
   @override
   void initState() {
@@ -68,7 +74,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
     await _controller!.initialize();
     await ServiceLocator.init();
-    await ServiceLocator.embedder.loadModelFromAsset('assets/models/mobilefacenet.tflite');
     await _controller!.startImageStream(_onCameraImage);
   }
 
@@ -93,21 +98,37 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _isProcessing = true;
     () async {
       try {
-        final InputImage input = inputImageFromCameraImage(image, _controller!.description);
+        final input = inputImageFromCameraImage(image, _controller!.description);
         final faces = await ServiceLocator.faceDetector.detectFaces(input);
+        _facePresent = faces.isNotEmpty;
+        if (!mounted) return;
+        setState(() {});
         if (faces.isNotEmpty) {
           final rgb = yuv420ToImage(image);
-          final data = preprocessTo112Rgb(rgb);
+          // Recortar la primera cara detectada para mejorar la calidad del embedding
+          final Rect box = faces.first.boundingBox;
+          final int x = box.left.clamp(0, rgb.width - 1).toInt();
+          final int y = box.top.clamp(0, rgb.height - 1).toInt();
+          final int w = box.width.clamp(1, rgb.width - x).toInt();
+          final int h = box.height.clamp(1, rgb.height - y).toInt();
+          final img.Image cropped = img.copyCrop(rgb, x: x, y: y, width: w, height: h);
+          final data = preprocessTo112Rgb(cropped);
           final embedding = ServiceLocator.embedder.runEmbedding(data);
-          final match = await ServiceLocator.recognition.identify(embedding);
+          _lastEmbedding = embedding;
+          final match = await ServiceLocator.recognition.identify(embedding, threshold: 1.20);
           if (match != null) {
-            _lastDetectedId = match;
-            // Mostrar coincidencia momentánea
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Detectado: $match'), duration: const Duration(milliseconds: 600)),
-              );
-            }
+            _lastDetectedId = match.id;
+            _lastDetectedName = match.name;
+            _lastDetectedDocument = match.document;
+            if (mounted) setState(() {});
+            _bannerTimer?.cancel();
+            _bannerTimer = Timer(const Duration(seconds: 2), () {
+              if (!mounted) return;
+              _lastDetectedId = null;
+              _lastDetectedName = null;
+              _lastDetectedDocument = null;
+              setState(() {});
+            });
           }
         }
       } catch (_) {
@@ -133,7 +154,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _registerAttendance({required bool isIngress}) async {
-    final String? id = _lastDetectedId;
+    String? id = _lastDetectedId;
+    if (id == null && _lastEmbedding != null) {
+      try {
+        final match = await ServiceLocator.recognition.identify(_lastEmbedding!, threshold: 1.20);
+        if (match != null) {
+          id = match.id;
+          _lastDetectedId = match.id;
+          _lastDetectedName = match.name;
+          _lastDetectedDocument = match.document;
+          if (mounted) setState(() {});
+        }
+      } catch (_) {}
+    }
     if (id == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -142,18 +175,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
       return;
     }
-    if (isIngress) {
-      await ServiceLocator.attendance.registerIngress(id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ingreso registrado para $id')),
-        );
+    try {
+      if (isIngress) {
+        await ServiceLocator.attendance.registerIngress(id);
+        if (mounted) {
+          final String label = _lastDetectedName ?? id;
+          final String suffix = _lastDetectedDocument != null ? ' · ${_lastDetectedDocument}' : '';
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ingreso registrado para $label$suffix')));
+        }
+      } else {
+        await ServiceLocator.attendance.registerEgress(id);
+        if (mounted) {
+          final String label = _lastDetectedName ?? id;
+          final String suffix = _lastDetectedDocument != null ? ' · ${_lastDetectedDocument}' : '';
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Salida registrada para $label$suffix')));
+        }
       }
-    } else {
-      await ServiceLocator.attendance.registerEgress(id);
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Salida registrada para $id')),
+          SnackBar(content: Text('Error registrando: $e')),
         );
       }
     }
@@ -186,6 +227,47 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             children: [
               Positioned.fill(
                 child: CameraPreview(ctrl),
+              ),
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  color: Colors.black.withOpacity(0.35),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: SafeArea(
+                    bottom: false,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        if (_lastDetectedName != null)
+                          Text(
+                            _lastDetectedName!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                          )
+                        else
+                          const Text(
+                            'Acerque su rostro a la cámara',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                          ),
+                        if (_lastDetectedDocument != null)
+                          Text(
+                            _lastDetectedDocument!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white70, fontSize: 14),
+                          )
+                        else if (!_facePresent)
+                          const Text(
+                            'Buscando rostro...',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.white60, fontSize: 13),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
               // Overlay simple con borde
               Positioned.fill(

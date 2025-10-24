@@ -1,54 +1,78 @@
 import 'dart:typed_data';
+import 'dart:ui' show Size;
 
 import 'package:camera/camera.dart';
-import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 import 'package:google_mlkit_commons/google_mlkit_commons.dart' as commons;
 
-InputImage inputImageFromCameraImage(CameraImage image, CameraDescription description) {
-  final InputImageRotation rotation = _rotationFromCameraDescription(description);
-  final InputImageFormat format = _formatFromRaw(image.format.raw);
+commons.InputImage inputImageFromCameraImage(CameraImage image, CameraDescription description) {
+  final commons.InputImageRotation rotation = _rotationFromCameraDescription(description);
 
-  final Uint8List bytes = _concatenatePlanes(image.planes);
+  final Uint8List bytes = _yuv420ToNv21(image);
   final Size size = Size(image.width.toDouble(), image.height.toDouble());
-
-  final List<commons.InputImagePlaneMetadata> planeData = image.planes
-      .map(
-        (Plane plane) => commons.InputImagePlaneMetadata(
-          bytesPerRow: plane.bytesPerRow,
-          height: plane.height,
-          width: plane.width,
-        ),
-      )
-      .toList();
 
   final commons.InputImageMetadata metadata = commons.InputImageMetadata(
     size: size,
     rotation: rotation,
-    format: format,
-    bytesPerRow: image.planes.first.bytesPerRow,
-    planeData: planeData,
+    // Declaramos explícitamente NV21 porque construimos el buffer en ese formato
+    format: commons.InputImageFormat.nv21,
+    // Para NV21, bytesPerRow debe ser el ancho en píxeles
+    bytesPerRow: image.width,
   );
 
-  return InputImage.fromBytes(bytes: bytes, metadata: metadata);
+  return commons.InputImage.fromBytes(bytes: bytes, metadata: metadata);
 }
 
-Uint8List _concatenatePlanes(List<Plane> planes) {
-  final WriteBuffer buffer = WriteBuffer();
-  for (final Plane plane in planes) {
-    buffer.putUint8List(plane.bytes);
+Uint8List _yuv420ToNv21(CameraImage image) {
+  final int width = image.width;
+  final int height = image.height;
+  final int ySize = width * height;
+
+  final Plane yPlane = image.planes[0];
+  final Plane uPlane = image.planes[1];
+  final Plane vPlane = image.planes[2];
+
+  final int uvRowStrideU = uPlane.bytesPerRow;
+  final int uvRowStrideV = vPlane.bytesPerRow;
+  final int uvPixelStrideU = uPlane.bytesPerPixel ?? 1;
+  final int uvPixelStrideV = vPlane.bytesPerPixel ?? 1;
+
+  final Uint8List out = Uint8List(ySize + (ySize >> 1));
+
+  // Copy Y
+  int outIndex = 0;
+  for (int y = 0; y < height; y++) {
+    final int rowStart = y * yPlane.bytesPerRow;
+    out.setRange(outIndex, outIndex + width, yPlane.bytes.sublist(rowStart, rowStart + width));
+    outIndex += width;
   }
-  return buffer.done().buffer.asUint8List();
+
+  // Copy interleaved VU
+  int vuIndex = ySize;
+  for (int y = 0; y < height ~/ 2; y++) {
+    int uIndex = y * uvRowStrideU;
+    int vIndex = y * uvRowStrideV;
+    for (int x = 0; x < width ~/ 2; x++) {
+      final int v = vPlane.bytes[vIndex];
+      final int u = uPlane.bytes[uIndex];
+      out[vuIndex++] = v;
+      out[vuIndex++] = u;
+      uIndex += uvPixelStrideU;
+      vIndex += uvPixelStrideV;
+    }
+  }
+
+  return out;
 }
 
-InputImageRotation _rotationFromCameraDescription(CameraDescription description) {
+commons.InputImageRotation _rotationFromCameraDescription(CameraDescription description) {
   final int? rotationDegrees = description.sensorOrientation;
-  final InputImageRotation? rotation = InputImageRotationValue.fromRawValue(rotationDegrees ?? 0);
-  return rotation ?? InputImageRotation.rotation0deg;
+  final commons.InputImageRotation? rotation = commons.InputImageRotationValue.fromRawValue(rotationDegrees ?? 0);
+  return rotation ?? commons.InputImageRotation.rotation0deg;
 }
 
-InputImageFormat _formatFromRaw(int raw) {
-  final InputImageFormat? format = InputImageFormatValue.fromRawValue(raw);
-  return format ?? InputImageFormat.nv21;
+commons.InputImageFormat _formatFromRaw(int raw) {
+  final commons.InputImageFormat? format = commons.InputImageFormatValue.fromRawValue(raw);
+  return format ?? commons.InputImageFormat.nv21;
 }
 
 

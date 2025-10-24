@@ -13,10 +13,13 @@ class RecognitionService {
 
   final SharedPreferences _prefs; // Conservado por compatibilidad, ya no se usa para identidades
   Database? _db;
+  Database get database => _db!;
 
   static const String _dbName = 'reconocimiento_biometrico.sqlite';
   static const String _tableEmployees = 'empleados';
   static const String _tableBiometrics = 'datos_biometricos';
+  static const String _tableAttendance = 'registros_asistencia';
+
   List<_CacheEntry>? _cache; // id, vector, metadatos
 
   Future<void> init() async {
@@ -25,32 +28,82 @@ class RecognitionService {
     final String path = p.join(dbDir, _dbName);
     _db = await openDatabase(
       path,
-      version: 1,
+      // ===================================================================
+      // ====================== SECCIÓN MODIFICADA 1 =======================
+      // ===================================================================
+      // ¡IMPORTANTE! Incrementar la versión de la base de datos
+      version: 2, // Era 1, ahora es 2
+      // ===================================================================
+      // ==================== FIN DE SECCIÓN MODIFICADA 1 ==================
+      // ===================================================================
       onCreate: (db, version) async {
-        await db.execute('''
-          CREATE TABLE $_tableEmployees (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL,
-            documento TEXT,
-            cargo TEXT,
-            telefono TEXT,
-            imagePath TEXT
-          )
-        ''');
-        await db.execute('''
-          CREATE TABLE $_tableBiometrics (
-            id_biometrico INTEGER PRIMARY KEY AUTOINCREMENT,
-            id_empleado INTEGER NOT NULL,
-            tipo_biometria TEXT NOT NULL DEFAULT 'rostro',
-            vector_biometrico BLOB,
-            fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(id_empleado) REFERENCES $_tableEmployees(id) ON DELETE CASCADE
-          )
-        ''');
+        // Crear TODAS las tablas de la base de datos aquí
+        await _createAllTables(db); // Separamos la creación para reutilizarla
       },
+      // ===================================================================
+      // ====================== SECCIÓN MODIFICADA 2 =======================
+      // ===================================================================
+      // AÑADIDO: Lógica para actualizar la base de datos cuando la versión cambia
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          // Si venimos de la versión 1 (sin la columna 'sincronizado'), la añadimos
+          await db.execute('''
+            ALTER TABLE $_tableAttendance
+            ADD COLUMN sincronizado INTEGER DEFAULT 0
+          ''');
+        }
+        // Puedes añadir más bloques 'if (oldVersion < X)' aquí para futuras actualizaciones
+      },
+      // ===================================================================
+      // ==================== FIN DE SECCIÓN MODIFICADA 2 ==================
+      // ===================================================================
     );
     await _warmCache();
   }
+
+  // ===================================================================
+  // ====================== SECCIÓN MODIFICADA 3 =======================
+  // ===================================================================
+  // Función separada para crear todas las tablas (usada en onCreate)
+  Future<void> _createAllTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE $_tableEmployees (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,
+        documento TEXT,
+        cargo TEXT,
+        telefono TEXT,
+        imagePath TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE $_tableBiometrics (
+        id_biometrico INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_empleado INTEGER NOT NULL,
+        tipo_biometria TEXT NOT NULL DEFAULT 'rostro',
+        vector_biometrico BLOB,
+        fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(id_empleado) REFERENCES $_tableEmployees(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE $_tableAttendance (
+        id_registro INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_empleado INTEGER NOT NULL,
+        id_dispositivo TEXT NOT NULL,
+        tipo_evento TEXT NOT NULL,
+        fecha_hora TEXT DEFAULT CURRENT_TIMESTAMP,
+        validado_biometricamente INTEGER DEFAULT 1,
+        -- Columna añadida para el estado de sincronización (0=pendiente, 1=enviado)
+        sincronizado INTEGER DEFAULT 0,
+        observaciones TEXT
+      )
+    ''');
+  }
+  // ===================================================================
+  // ==================== FIN DE SECCIÓN MODIFICADA 3 ==================
+  // ===================================================================
+
 
   Future<void> _warmCache() async {
     final Database useDb = _db!;
@@ -337,5 +390,3 @@ extension on double {
     return g;
   }
 }
-
-

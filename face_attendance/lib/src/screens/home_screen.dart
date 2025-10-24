@@ -46,20 +46,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  // ===========================================================================
+  // ========================== SECCIÓN MODIFICADA 1 ===========================
+  // ===========================================================================
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final CameraController? cameraController = _controller;
-    if (cameraController == null || !cameraController.value.isInitialized) {
-      return;
-    }
+
+    // Si la app pasa a inactiva (ej. se abre otra pantalla de cámara o se minimiza),
+    // libera el controlador actual.
     if (state == AppLifecycleState.inactive) {
-      cameraController.dispose();
+      cameraController?.dispose();
+      _controller = null; // Marcar como nulo para que 'resumed' sepa que debe reiniciar
     } else if (state == AppLifecycleState.resumed) {
-      _reinitializeCamera();
+      // Si la app vuelve a estar activa y *no tenemos* controlador,
+      // significa que fue liberado. ¡Hay que reiniciarlo!
+      // Usamos _initialize() porque está atado al FutureBuilder _initFuture.
+      if (_controller == null) {
+        // Reiniciar el futurebuilder para que llame a _initialize()
+        setState(() {
+          _initFuture = _initialize();
+        });
+      }
     }
   }
+  // ===========================================================================
+  // ======================== FIN DE SECCIÓN MODIFICADA 1 ======================
+  // ===========================================================================
 
   Future<void> _initialize() async {
+    // Asegurarnos de que el controlador anterior esté liberado si existe
+    await _controller?.dispose();
+    _controller = null;
+
     await Permission.camera.request();
     _cameras = await availableCameras();
     final CameraDescription camera = _cameras.firstWhere(
@@ -74,24 +93,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
     await _controller!.initialize();
     await ServiceLocator.init();
-    await _controller!.startImageStream(_onCameraImage);
+    
+    // Solo iniciar el stream si el controlador sigue siendo este
+    if (mounted && _controller != null) {
+      await _controller!.startImageStream(_onCameraImage);
+    }
   }
 
-  Future<void> _reinitializeCamera() async {
-    final CameraDescription camera = _cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.front,
-      orElse: () => _cameras.first,
-    );
-    _controller = CameraController(
-      camera,
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.yuv420,
-    );
-    await _controller!.initialize();
-    await _controller!.startImageStream(_onCameraImage);
-    setState(() {});
-  }
+  // Esta función ya no es necesaria con la nueva lógica de didChangeAppLifecycleState
+  // Future<void> _reinitializeCamera() async {
+  //   ...
+  // }
 
   void _onCameraImage(CameraImage image) {
     if (_isProcessing) return;
@@ -134,7 +146,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       } catch (_) {
         // Silenciar errores de frame
       } finally {
+        // ===================================================================
+        // ====================== SECCIÓN MODIFICADA 2 =======================
+        // ===================================================================
+        // Añadimos un delay para no procesar CADA frame y evitar 'buffer dropped'
+        await Future.delayed(const Duration(milliseconds: 100));
         _isProcessing = false;
+        // ===================================================================
+        // ==================== FIN DE SECCIÓN MODIFICADA 2 ==================
+        // ===================================================================
       }
     }();
   }
@@ -221,6 +241,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           }
           final CameraController? ctrl = _controller;
           if (ctrl == null || !ctrl.value.isInitialized) {
+            // Mostrar un estado diferente si la cámara se está reiniciando
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
             return const Center(child: Text('Cámara no disponible'));
           }
           return Stack(
@@ -316,5 +340,3 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 }
-
-
